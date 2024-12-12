@@ -385,9 +385,68 @@ class MessageScraper {
         }
     }
 
+    async checkAndCreateEnv() {
+        try {
+            if (!fs.existsSync('.env')) {
+                console.log('No .env file found. Creating new one...');
+                fs.writeFileSync('.env', 'DISCORD_TOKEN=');
+            }
+            return fs.existsSync('.env');
+        } catch (error) {
+            console.error('Error creating .env file:', error);
+            return false;
+        }
+    }
+
+    async validateAndUpdateToken(token) {
+        try {
+            // Try to login with the token
+            await this.client.login(token);
+            
+            // If login successful, update the .env file
+            await this.checkAndCreateEnv();
+            const envContent = `DISCORD_TOKEN=${token}`;
+            fs.writeFileSync('.env', envContent);
+            
+            return true;
+        } catch (error) {
+            console.error('Token validation error:', error.message);
+            return false;
+        } finally {
+            // Destroy the client connection if it exists
+            if (this.client) {
+                this.client.destroy();
+            }
+            // Create a new client instance
+            this.client = new Client();
+        }
+    }
+
     async start() {
-        const serverId = await question('Please enter the server ID to scrape: ');
+        // Ensure .env file exists
+        await this.checkAndCreateEnv();
         
+        const serverId = await question('Please enter the server ID to scrape: ');
+        let token = process.env.DISCORD_TOKEN;
+        let isValidToken = false;
+
+        while (!isValidToken) {
+            if (!token || token.trim() === '') {
+                console.log('No token found in .env file.');
+                token = await question('Please enter your Discord token: ');
+            }
+
+            console.log('Validating token...');
+            isValidToken = await this.validateAndUpdateToken(token);
+
+            if (!isValidToken) {
+                console.error('Invalid token!');
+                token = await question('Please enter a valid Discord token: ');
+            }
+        }
+
+        console.log('Token validated successfully!');
+
         this.client.on('ready', async () => {
             console.log(`Logged in as ${this.client.user.tag}`);
             
@@ -410,17 +469,11 @@ class MessageScraper {
             }
         });
 
-        const token = process.env.DISCORD_TOKEN;
-        if (!token) {
-            console.error('No Discord token found in environment variables!');
-            rl.close();
-            return;
-        }
-
+        // Final login attempt with validated token
         try {
             await this.client.login(token);
         } catch (error) {
-            console.error('Failed to login:', error);
+            console.error('Final login failed:', error);
             rl.close();
         }
     }
