@@ -247,9 +247,10 @@ class MessageScraper {
             for (const [_, channel] of channels) {
                 try {
                     console.log(`Scraping channel: ${channel.name}`);
-                    const messages = [];
+                    let messages = [];
                     let lastId = null;
                     
+                    // First, get the oldest messages
                     while (true) {
                         const options = { limit: 99 };
                         if (lastId) options.before = lastId;
@@ -257,90 +258,98 @@ class MessageScraper {
                         const batch = await channel.messages.fetch(options);
                         if (batch.size === 0) break;
                         
-                        for (const [_, message] of batch) {
-                            const msgData = {
-                                content: message.content,
-                                author: message.author.tag,
-                                timestamp: message.createdAt.toISOString(),
-                                embeds: []
-                            };
+                        // Process messages in this batch
+                        const batchMessages = Array.from(batch.values()).map(message => ({
+                            content: message.content,
+                            author: message.author.tag,
+                            timestamp: message.createdAt.toISOString(),
+                            embeds: [],
+                            id: message.id,
+                            createdTimestamp: message.createdTimestamp
+                        }));
 
-                            // Handle embeds
-                            for (const embed of message.embeds) {
-                                const embedData = {
-                                    title: embed.title,
-                                    description: embed.description,
-                                    url: embed.url,
-                                    color: embed.color,
-                                    timestamp: embed.timestamp,
-                                    fields: embed.fields.map(field => ({
-                                        name: field.name,
-                                        value: field.value,
-                                        inline: field.inline
-                                    })),
-                                    author: embed.author ? {
-                                        name: embed.author.name,
-                                        url: embed.author.url,
-                                        iconURL: embed.author.iconURL
-                                    } : null,
-                                    footer: embed.footer ? {
-                                        text: embed.footer.text,
-                                        iconURL: embed.footer.iconURL
-                                    } : null
-                                };
-
-                                // Handle embed thumbnail
-                                if (embed.thumbnail) {
-                                    const ext = path.extname(embed.thumbnail.url.split('?')[0]) || '.png';
-                                    const filename = path.join(this.embedDir, 
-                                        `${channel.name}_${message.id}_thumb${ext}`);
-                                    const downloadedFile = await this.downloadImage(embed.thumbnail.url, filename);
-                                    if (downloadedFile) {
-                                        embedData.thumbnailPath = downloadedFile;
-                                    }
-                                }
-
-                                // Handle embed image
-                                if (embed.image) {
-                                    try {
-                                        const ext = path.extname(embed.image.url.split('?')[0]) || '.png';
-                                        const filename = path.join(this.embedDir, 
-                                            `${channel.name}_${message.id}_embed${ext}`);
-                                        const downloadedFile = await this.downloadImage(embed.image.url, filename);
-                                        if (downloadedFile) {
-                                            embedData.imagePath = downloadedFile;
-                                        }
-                                    } catch (error) {
-                                        console.error('Failed to process embed image:', error.message);
-                                    }
-                                }
-
-                                msgData.embeds.push(embedData);
-                            }
-
-                            // Handle attachments
-                            for (const attachment of message.attachments.values()) {
-                                if (/\.(jpg|jpeg|png|gif|webp)$/i.test(attachment.name)) {
-                                    try {
-                                        const safeFilename = attachment.name.replace(/[<>:"/\\|?*]/g, '_');
-                                        const filename = path.join(this.attachmentDir, 
-                                            `${channel.name}_${attachment.id}_${safeFilename}`);
-                                        const downloadedFile = await this.downloadImage(attachment.url, filename);
-                                        if (downloadedFile) {
-                                            msgData.imagePath = downloadedFile;
-                                        }
-                                    } catch (error) {
-                                        console.error(`Failed to process attachment: ${attachment.name}`, error.message);
-                                        continue;
-                                    }
-                                }
-                            }
-
-                            messages.push(msgData);
-                        }
-
+                        messages = messages.concat(batchMessages);
                         lastId = batch.last().id;
                         await setTimeout(1000);
+                    }
+
+                    // Sort messages by timestamp (oldest first)
+                    messages.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+
+                    // Now process attachments and embeds for the sorted messages
+                    for (const msgData of messages) {
+                        const message = await channel.messages.fetch(msgData.id);
+
+                        // Handle embeds
+                        for (const embed of message.embeds) {
+                            const embedData = {
+                                title: embed.title,
+                                description: embed.description,
+                                url: embed.url,
+                                color: embed.color,
+                                timestamp: embed.timestamp,
+                                fields: embed.fields.map(field => ({
+                                    name: field.name,
+                                    value: field.value,
+                                    inline: field.inline
+                                })),
+                                author: embed.author ? {
+                                    name: embed.author.name,
+                                    url: embed.author.url,
+                                    iconURL: embed.author.iconURL
+                                } : null,
+                                footer: embed.footer ? {
+                                    text: embed.footer.text,
+                                    iconURL: embed.footer.iconURL
+                                } : null
+                            };
+
+                            // Handle embed thumbnail
+                            if (embed.thumbnail) {
+                                const ext = path.extname(embed.thumbnail.url.split('?')[0]) || '.png';
+                                const filename = path.join(this.embedDir, 
+                                    `${channel.name}_${message.id}_thumb${ext}`);
+                                const downloadedFile = await this.downloadImage(embed.thumbnail.url, filename);
+                                if (downloadedFile) {
+                                    embedData.thumbnailPath = downloadedFile;
+                                }
+                            }
+
+                            // Handle embed image
+                            if (embed.image) {
+                                try {
+                                    const ext = path.extname(embed.image.url.split('?')[0]) || '.png';
+                                    const filename = path.join(this.embedDir, 
+                                        `${channel.name}_${message.id}_embed${ext}`);
+                                    const downloadedFile = await this.downloadImage(embed.image.url, filename);
+                                    if (downloadedFile) {
+                                        embedData.imagePath = downloadedFile;
+                                    }
+                                } catch (error) {
+                                    console.error('Failed to process embed image:', error.message);
+                                }
+                            }
+
+                            msgData.embeds.push(embedData);
+                        }
+
+                        // Handle attachments
+                        for (const attachment of message.attachments.values()) {
+                            if (/\.(jpg|jpeg|png|gif|webp)$/i.test(attachment.name)) {
+                                try {
+                                    const safeFilename = attachment.name.replace(/[<>:"/\\|?*]/g, '_');
+                                    const filename = path.join(this.attachmentDir, 
+                                        `${channel.name}_${attachment.id}_${safeFilename}`);
+                                    const downloadedFile = await this.downloadImage(attachment.url, filename);
+                                    if (downloadedFile) {
+                                        msgData.imagePath = downloadedFile;
+                                    }
+                                } catch (error) {
+                                    console.error(`Failed to process attachment: ${attachment.name}`, error.message);
+                                    continue;
+                                }
+                            }
+                        }
                     }
 
                     if (messages.length > 0) {
